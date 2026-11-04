@@ -39,27 +39,7 @@ func main() {
 	updateDBFlag := flag.Bool("update-db", false, "强制从开源镜像下载更新本地 MMDB 数据库")
 	flag.Parse()
 
-	// 初始化 GeoIP 引擎
-	dbPath := *dbFlag
-	if dbPath == "" {
-		dbPath = geoip.DefaultDBPath()
-	}
-
-	if *updateDBFlag {
-		fmt.Printf("正在从开源镜像下载更新本地 MMDB 数据库至: %s ...\n", dbPath)
-		if err := geoip.DownloadDatabase(dbPath); err != nil {
-			fmt.Fprintf(os.Stderr, "下载数据库失败: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("GeoIP 数据库下载更新成功！")
-		return
-	}
-
-	geoMgr := geoip.NewManager(dbPath)
-	defer geoMgr.Close()
-	geoip.EnsureDatabase(geoMgr, true)
-
-	// 1. 环境感知
+	// 1. 环境感知 (优先感知代理以便加速 GeoIP 下载)
 	env := probe.DetectEnvironment()
 	if *proxyFlag != "" {
 		env.ProxyEnabled = true
@@ -70,6 +50,26 @@ func main() {
 	if !*directFlag && env.ProxyEnabled {
 		activeProxy = env.ProxyURL
 	}
+
+	// 2. 初始化 GeoIP 引擎
+	dbPath := *dbFlag
+	if dbPath == "" {
+		dbPath = geoip.DefaultDBPath()
+	}
+
+	if *updateDBFlag {
+		fmt.Printf("正在从开源镜像下载更新本地 MMDB 数据库至: %s ...\n", dbPath)
+		if err := geoip.DownloadDatabase(dbPath, activeProxy); err != nil {
+			fmt.Fprintf(os.Stderr, "下载数据库失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("GeoIP 数据库下载更新成功！")
+		return
+	}
+
+	geoMgr := geoip.NewManager(dbPath)
+	defer geoMgr.Close()
+	geoip.EnsureDatabase(geoMgr, true, activeProxy)
 
 	// 2. 初始化测试目标
 	targets := []probe.Target{

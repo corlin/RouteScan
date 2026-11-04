@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -23,15 +24,32 @@ func DefaultDBPath() string {
 	return filepath.Join(home, ".routescan", "geoip.mmdb")
 }
 
-// DownloadDatabase 下载远端 MMDB 镜像到临时文件，下载完成后原子重命名至 destPath
-func DownloadDatabase(destPath string) error {
+// DownloadDatabase 下载远端 MMDB 镜像到临时文件，下载完成后原子重命名至 destPath。支持传入可选的 proxyURL。
+func DownloadDatabase(destPath string, proxyURLs ...string) error {
 	dir := filepath.Dir(destPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
 
+	proxyURL := ""
+	if len(proxyURLs) > 0 {
+		proxyURL = proxyURLs[0]
+	}
+
 	tmpFile := destPath + ".tmp"
-	client := &http.Client{Timeout: 60 * time.Second}
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+	}
+	if proxyURL != "" {
+		if u, err := url.Parse(proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(u)
+		}
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   180 * time.Second,
+	}
 
 	resp, err := client.Get(OpenMMDBURL)
 	if err != nil {
@@ -64,9 +82,14 @@ func DownloadDatabase(destPath string) error {
 }
 
 // EnsureDatabase 确保数据库已加载。若文件已存在则直接加载；若不存在且 autoDownload 为 true，则在后台协程异步下载并热重载。
-func EnsureDatabase(mgr *Manager, autoDownload bool) {
+func EnsureDatabase(mgr *Manager, autoDownload bool, proxyURLs ...string) {
 	if mgr == nil {
 		return
+	}
+
+	proxyURL := ""
+	if len(proxyURLs) > 0 {
+		proxyURL = proxyURLs[0]
 	}
 
 	mgr.mu.RLock()
@@ -84,7 +107,7 @@ func EnsureDatabase(mgr *Manager, autoDownload bool) {
 
 	if autoDownload {
 		go func() {
-			if err := DownloadDatabase(targetPath); err == nil {
+			if err := DownloadDatabase(targetPath, proxyURL); err == nil {
 				_ = mgr.LoadDB(targetPath)
 			}
 		}()
