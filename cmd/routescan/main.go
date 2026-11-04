@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"routeScan/internal/geoip"
 	"routeScan/internal/probe"
 	"routeScan/internal/tui"
 	"strings"
@@ -34,7 +35,29 @@ func main() {
 	directFlag := flag.Bool("d", false, "强制直连模式 (忽略代理)")
 	onceFlag := flag.Bool("c", false, "单次诊断模式 (打印报告后退出)")
 	outputFlag := flag.String("o", "", "指定诊断报告保存文件路径")
+	dbFlag := flag.String("db", "", "自定义本地 MMDB 数据库路径 (默认 ~/.routescan/geoip.mmdb)")
+	updateDBFlag := flag.Bool("update-db", false, "强制从开源镜像下载更新本地 MMDB 数据库")
 	flag.Parse()
+
+	// 初始化 GeoIP 引擎
+	dbPath := *dbFlag
+	if dbPath == "" {
+		dbPath = geoip.DefaultDBPath()
+	}
+
+	if *updateDBFlag {
+		fmt.Printf("正在从开源镜像下载更新本地 MMDB 数据库至: %s ...\n", dbPath)
+		if err := geoip.DownloadDatabase(dbPath); err != nil {
+			fmt.Fprintf(os.Stderr, "下载数据库失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("GeoIP 数据库下载更新成功！")
+		return
+	}
+
+	geoMgr := geoip.NewManager(dbPath)
+	defer geoMgr.Close()
+	geoip.EnsureDatabase(geoMgr, true)
 
 	// 1. 环境感知
 	env := probe.DetectEnvironment()
@@ -72,7 +95,7 @@ func main() {
 				if h, _, err := net.SplitHostPort(traceHost); err == nil {
 					traceHost = h
 				}
-				hops, totalHops, _ := probe.TraceHops(traceHost, 15)
+				hops, totalHops, _ := probe.TraceHopsWithGeo(traceHost, 15, geoMgr)
 				snap.Hops = totalHops
 				snap.HopsList = hops
 				state.Update(t.Name, snap)
@@ -150,7 +173,7 @@ func main() {
 			if h, _, err := net.SplitHostPort(traceHost); err == nil {
 				traceHost = h
 			}
-			hops, totalHops, err := probe.TraceHops(traceHost, 15)
+			hops, totalHops, err := probe.TraceHopsWithGeo(traceHost, 15, geoMgr)
 			if err == nil && len(hops) > 0 {
 				state.UpdateHops(target.Name, hops, totalHops)
 			}
