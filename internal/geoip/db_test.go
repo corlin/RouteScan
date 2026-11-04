@@ -1,8 +1,24 @@
 package geoip
 
 import (
+	"os"
 	"testing"
 )
+
+func TestLookupMMDBRealFile(t *testing.T) {
+	dbPath := DefaultDBPath()
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Skip("local mmdb not found")
+	}
+	mgr := NewManager(dbPath)
+	defer mgr.Close()
+
+	locGoogle := mgr.Lookup("8.8.8.8")
+	t.Logf("8.8.8.8 location: %s", locGoogle.String())
+
+	locCF := mgr.Lookup("104.18.0.1")
+	t.Logf("104.18.0.1 location: %s", locCF.String())
+}
 
 func TestLookupBuiltinFallback(t *testing.T) {
 	mgr := NewManager("") // 无 mmdb 路径

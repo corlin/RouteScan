@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	// OpenMMDBURL 开源精简版全球 IP/ASN mmdb 镜像源
-	OpenMMDBURL = "https://raw.githubusercontent.com/P3TERX/GeoLite.mmdb/download/GeoLite2-City.mmdb"
+	// OpenMMDBURL 开源轻量精简版全球 IP mmdb 镜像源 (约 3.2MB，下载极速且全球高精度)
+	OpenMMDBURL = "https://raw.githubusercontent.com/P3TERX/GeoLite.mmdb/download/GeoLite2-Country.mmdb"
 )
 
 // DefaultDBPath 返回默认的本地 GeoIP 数据库存储路径 (~/.routescan/geoip.mmdb)

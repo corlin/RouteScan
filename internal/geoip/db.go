@@ -50,6 +50,14 @@ type mmdbRecord struct {
 		IsoCode string            `maxminddb:"iso_code"`
 		Names   map[string]string `maxminddb:"names"`
 	} `maxminddb:"country"`
+	RegisteredCountry struct {
+		IsoCode string            `maxminddb:"iso_code"`
+		Names   map[string]string `maxminddb:"names"`
+	} `maxminddb:"registered_country"`
+	Continent struct {
+		Code  string            `maxminddb:"code"`
+		Names map[string]string `maxminddb:"names"`
+	} `maxminddb:"continent"`
 	Subdivisions []struct {
 		Names map[string]string `maxminddb:"names"`
 	} `maxminddb:"subdivisions"`
@@ -93,6 +101,24 @@ func (m *Manager) Lookup(ipStr string) *GeoLocation {
 				loc.Country = name
 			} else if record.Country.IsoCode != "" {
 				loc.Country = record.Country.IsoCode
+			}
+
+			if loc.Country == "" {
+				if name, ok := record.RegisteredCountry.Names["zh-CN"]; ok {
+					loc.Country = name
+				} else if name, ok := record.RegisteredCountry.Names["en"]; ok {
+					loc.Country = name
+				} else if record.RegisteredCountry.IsoCode != "" {
+					loc.Country = record.RegisteredCountry.IsoCode
+				}
+			}
+
+			if loc.Country == "" {
+				if name, ok := record.Continent.Names["zh-CN"]; ok {
+					loc.Country = name
+				} else if name, ok := record.Continent.Names["en"]; ok {
+					loc.Country = name
+				}
 			}
 
 			if len(record.Subdivisions) > 0 {
