@@ -1,8 +1,11 @@
 package probe
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	"routeScan/internal/geoip"
 )
 
 func TestParseTracerouteLine(t *testing.T) {
@@ -103,5 +106,49 @@ func TestTraceHopsLocalhost(t *testing.T) {
 	}
 	if len(hops) == 0 {
 		t.Logf("no hops parsed (traceroute might be restricted or formatted differently)")
+	}
+}
+
+func TestTraceHopsGeoAnnotation(t *testing.T) {
+	line := " 1  192.168.1.1 (192.168.1.1)  0.785 ms"
+	hop, ok := parseTracerouteLine(line)
+	if !ok {
+		t.Fatalf("failed to parse line")
+	}
+	mgr := geoip.NewManager("")
+	loc := mgr.Lookup(hop.IP)
+	hop.Geo = loc.String()
+	hop.ASN = loc.ASN
+	expectedGeo := "[局域网] 本地局域网 / 家庭网关"
+	if hop.Geo != expectedGeo {
+		t.Fatalf("expected Geo %q, got %q", expectedGeo, hop.Geo)
+	}
+	if !strings.Contains(hop.Geo, "局域网") {
+		t.Fatalf("expected 局域网 geo, got %s", hop.Geo)
+	}
+
+	// Also test annotateHopWithGeo
+	var hopAnnotated HopInfo
+	hopAnnotated, ok = parseTracerouteLine(line)
+	if !ok {
+		t.Fatalf("failed to parse line")
+	}
+	annotateHopWithGeo(&hopAnnotated, mgr)
+	if hopAnnotated.Geo != expectedGeo {
+		t.Fatalf("expected annotated Geo %q, got %q", expectedGeo, hopAnnotated.Geo)
+	}
+
+	// Test timeout hop does not get annotated
+	timeoutHop := HopInfo{HopNum: 2, IP: "*"}
+	annotateHopWithGeo(&timeoutHop, mgr)
+	if timeoutHop.Geo != "" || timeoutHop.ASN != "" {
+		t.Fatalf("expected empty Geo and ASN for timeout hop, got Geo=%q ASN=%q", timeoutHop.Geo, timeoutHop.ASN)
+	}
+
+	// Test nil manager does not panic
+	hopNilMgr := HopInfo{HopNum: 1, IP: "192.168.1.1"}
+	annotateHopWithGeo(&hopNilMgr, nil)
+	if hopNilMgr.Geo != "" {
+		t.Fatalf("expected empty Geo when mgr is nil, got %q", hopNilMgr.Geo)
 	}
 }

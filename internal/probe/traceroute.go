@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"routeScan/internal/geoip"
 )
 
 // EstimateHopsFromTTL estimates the number of network hops based on the received TTL.
@@ -104,9 +106,19 @@ func parseTracerouteLine(line string) (HopInfo, bool) {
 	return HopInfo{}, false
 }
 
-// TraceHops traces the network route to a host without requiring root privileges.
+func annotateHopWithGeo(hop *HopInfo, geoMgr *geoip.Manager) {
+	if geoMgr == nil || hop == nil || hop.IP == "*" || hop.IP == "" {
+		return
+	}
+	if loc := geoMgr.Lookup(hop.IP); loc != nil {
+		hop.Geo = loc.String()
+		hop.ASN = loc.ASN
+	}
+}
+
+// TraceHopsWithGeo traces the network route to a host and populates Geo and ASN info for each hop.
 // Uses system traceroute with non-privileged flags (-q 1, -w 1).
-func TraceHops(host string, maxHops int) ([]HopInfo, int, error) {
+func TraceHopsWithGeo(host string, maxHops int, geoMgr *geoip.Manager) ([]HopInfo, int, error) {
 	if maxHops <= 0 {
 		maxHops = 15
 	}
@@ -122,6 +134,7 @@ func TraceHops(host string, maxHops int) ([]HopInfo, int, error) {
 		for scanner.Scan() {
 			line := scanner.Text()
 			if hop, ok := parseTracerouteLine(line); ok {
+				annotateHopWithGeo(&hop, geoMgr)
 				hops = append(hops, hop)
 			}
 		}
@@ -132,4 +145,10 @@ func TraceHops(host string, maxHops int) ([]HopInfo, int, error) {
 		totalHops = 12
 	}
 	return hops, totalHops, nil
+}
+
+// TraceHops traces the network route to a host without requiring root privileges.
+// Uses system traceroute with non-privileged flags (-q 1, -w 1).
+func TraceHops(host string, maxHops int) ([]HopInfo, int, error) {
+	return TraceHopsWithGeo(host, maxHops, nil)
 }

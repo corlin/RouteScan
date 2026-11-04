@@ -29,6 +29,8 @@ type HopInfo struct {
 	RTT3    time.Duration
 	Loss    float64
 	Comment string
+	Geo     string
+	ASN     string
 }
 
 type TimingResult struct {
