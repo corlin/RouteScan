@@ -64,5 +64,36 @@ func ExportSnapshot(path string, targets []probe.Target, state *probe.StateManag
 		fmt.Fprintf(f, "\n")
 	}
 
+	fmt.Fprintf(f, "## 3. 逐跳路由追踪与地理归属 (Traceroute & GeoIP)\n\n")
+	hasHops := false
+	for _, tgt := range targets {
+		if state == nil {
+			continue
+		}
+		snap := state.Get(tgt.Name)
+		if snap == nil || len(snap.HopsList) == 0 {
+			continue
+		}
+		hasHops = true
+		fmt.Fprintf(f, "### %s 逐跳明细\n\n", tgt.Name)
+		fmt.Fprintf(f, "| 跳数 | IP 地址 | 地理位置 & 运营商/AS | 第1次 | 第2次 | 丢包率 |\n")
+		fmt.Fprintf(f, "| :--- | :--- | :--- | :--- | :--- | :--- |\n")
+		for _, h := range snap.HopsList {
+			geoInfo := h.Geo
+			if geoInfo == "" {
+				geoInfo = h.Host
+			}
+			if geoInfo == "" {
+				geoInfo = "-"
+			}
+			fmt.Fprintf(f, "| %d | %s | %s | %s | %s | %.1f%% |\n",
+				h.HopNum, h.IP, geoInfo, formatDuration(h.RTT1), formatDuration(h.RTT2), h.Loss)
+		}
+		fmt.Fprintf(f, "\n")
+	}
+	if !hasHops {
+		fmt.Fprintf(f, "*(暂无逐跳探测明细数据)*\n\n")
+	}
+
 	return nil
 }

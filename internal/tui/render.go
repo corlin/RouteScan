@@ -137,17 +137,21 @@ func RenderDashboard(targets []probe.Target, state *probe.StateManager, selected
 
 		sb.WriteString(fmt.Sprintf("\033[1;36m╠═══════════════════════════════════════════════════════════════════════════════════════════════╣\033[0m\n"))
 		sb.WriteString(fmt.Sprintf("\033[1;35m【逐跳路由明细: %s】 (按 ↑/↓ 切换目标)\033[0m\n", curTarget.Name))
-		sb.WriteString(fmt.Sprintf("  跳数   IP 地址           主机名/归属说明                第1次     第2次     丢包率\n"))
+		sb.WriteString(fmt.Sprintf("  跳数   IP 地址           地理位置 & 运营商/AS                          第1次     第2次     丢包率\n"))
 
 		if curSnap != nil && len(curSnap.HopsList) > 0 {
 			for _, h := range curSnap.HopsList {
-				sb.WriteString(fmt.Sprintf("   %-3d   %-16s  %-26s %8s  %8s   %5.1f%%\n",
-					h.HopNum, h.IP, truncate(h.Host, 26), formatDuration(h.RTT1), formatDuration(h.RTT2), h.Loss))
+				geoInfo := h.Geo
+				if geoInfo == "" {
+					geoInfo = h.Host
+				}
+				sb.WriteString(fmt.Sprintf("   %-3d   %-16s  %-38s %8s  %8s   %5.1f%%\n",
+					h.HopNum, h.IP, truncate(geoInfo, 38), formatDuration(h.RTT1), formatDuration(h.RTT2), h.Loss))
 			}
 		} else {
-			sb.WriteString(fmt.Sprintf("   1     %-16s  本地默认网关                   %8s         -     0.0%%\n", gatewayIP, "0.8ms"))
-			sb.WriteString(fmt.Sprintf("   2     %-16s  城域网/专线出口                %8s         -     0.0%%\n", "10.x.x.x", "3.2ms"))
-			sb.WriteString(fmt.Sprintf("   ...   (后台探测路由追踪中，将在下个周期呈现完整跳数...)\n"))
+			sb.WriteString(fmt.Sprintf("   1     %-16s  %-38s %8s         -     0.0%%\n", gatewayIP, "本地局域网 / 默认网关", "0.8ms"))
+			sb.WriteString(fmt.Sprintf("   2     %-16s  %-38s %8s         -     0.0%%\n", "10.x.x.x", "城域网 / 骨干专线出口", "3.2ms"))
+			sb.WriteString(fmt.Sprintf("   ...   (后台探测路由追踪中，将在下个周期呈现完整跳数与地理归属...)\n"))
 		}
 	}
 
@@ -158,11 +162,12 @@ func RenderDashboard(targets []probe.Target, state *probe.StateManager, selected
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
 	if maxLen <= 3 {
-		return s[:maxLen]
+		return string(runes[:maxLen])
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }

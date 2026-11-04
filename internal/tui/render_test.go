@@ -64,7 +64,8 @@ func TestRenderDashboard(t *testing.T) {
 		TTFB:   500 * time.Millisecond,
 		Hops:   12,
 		HopsList: []probe.HopInfo{
-			{HopNum: 1, IP: "192.168.1.1", Host: "gateway.local.domain", RTT1: time.Millisecond, RTT2: 2 * time.Millisecond, Loss: 0},
+			{HopNum: 1, IP: "192.168.1.1", Host: "gateway.local.domain", Geo: "局域网 [本地局域网]", RTT1: time.Millisecond, RTT2: 2 * time.Millisecond, Loss: 0},
+			{HopNum: 2, IP: "202.96.209.133", Host: "dns.sh.cn", Geo: "", RTT1: 5 * time.Millisecond, RTT2: 6 * time.Millisecond, Loss: 0},
 		},
 		Timestamp: time.Now(),
 	})
@@ -85,6 +86,15 @@ func TestRenderDashboard(t *testing.T) {
 	}
 	if !strings.Contains(output, "代理模式") {
 		t.Fatalf("expected proxy mode in dashboard output: %s", output)
+	}
+	if !strings.Contains(output, "地理位置 & 运营商/AS") {
+		t.Fatalf("expected geo column header in dashboard output: %s", output)
+	}
+	if !strings.Contains(output, "局域网 [本地局域网]") {
+		t.Fatalf("expected geo value in dashboard output: %s", output)
+	}
+	if !strings.Contains(output, "dns.sh.cn") {
+		t.Fatalf("expected fallback host in dashboard output: %s", output)
 	}
 
 	// Direct mode check
@@ -133,6 +143,9 @@ func TestTruncate(t *testing.T) {
 	}
 	if s := truncate("abc", 2); s != "ab" {
 		t.Fatalf("expected 'ab', got %s", s)
+	}
+	if s := truncate("中国上海电信骨干网核心路由节点出口", 10); s != "中国上海电信骨..." {
+		t.Fatalf("expected '中国上海电信骨...', got %s", s)
 	}
 }
 
@@ -193,6 +206,10 @@ func TestExportSnapshot(t *testing.T) {
 		TTFB:       1120 * time.Millisecond,
 		Hops:       14,
 		PacketLoss: 0.0,
+		HopsList: []probe.HopInfo{
+			{HopNum: 1, IP: "192.168.1.1", Host: "gateway.local", Geo: "局域网 [本地局域网]", RTT1: time.Millisecond, RTT2: 2 * time.Millisecond, Loss: 0},
+			{HopNum: 2, IP: "202.96.209.133", Host: "dns.sh.cn", Geo: "中国 上海 电信 [AS4812]", RTT1: 5 * time.Millisecond, RTT2: 6 * time.Millisecond, Loss: 0},
+		},
 		Timestamp:  time.Now(),
 	})
 	state.Update("ErrorService", &probe.ProbeSnapshot{
@@ -228,5 +245,11 @@ func TestExportSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(text, "ErrorService") {
 		t.Fatalf("missing error service in snapshot: %s", text)
+	}
+	if !strings.Contains(text, "地理位置 & 运营商/AS") {
+		t.Fatalf("missing hop geo header in snapshot: %s", text)
+	}
+	if !strings.Contains(text, "局域网 [本地局域网]") || !strings.Contains(text, "中国 上海 电信 [AS4812]") {
+		t.Fatalf("missing hop geo info in snapshot: %s", text)
 	}
 }
