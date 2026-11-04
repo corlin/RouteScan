@@ -565,18 +565,18 @@ git commit -m "feat(tui): render compact geoip and asn column in hop details tab
 - Modify: `Makefile`
 - Test: 现场执行真实网络探测
 
-- [ ] **Step 1: 支持 `--db` 与 `--update-db` 参数**
+- [x] **Step 1: 支持 `--db` 与 `--update-db` 参数**
 
-- [ ] **Step 2: 运行编译与全量单测**
+- [x] **Step 2: 运行编译与全量单测**
 
 Run: `make test && make build`
 Expected: 编译成功，0 错误
 
-- [ ] **Step 3: 运行 `./routescan -c` 验证 GeoIP 输出**
+- [x] **Step 3: 运行 `./routescan -c` 验证 GeoIP 输出**
 
 Expected: 终端和 `routescan_report.md` 中完整呈现每一跳的 `[局域网]`、运营商及地理归属。
 
-- [ ] **Step 4: 提交代码**
+- [x] **Step 4: 提交代码**
 
 ```bash
 git add cmd/routescan/main.go Makefile
