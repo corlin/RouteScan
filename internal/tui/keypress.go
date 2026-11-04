@@ -58,7 +58,7 @@ func ListenKeys(keyChan chan<- KeyType, stopChan <-chan struct{}) {
 
 	exec.Command("stty", sttyFlag, "/dev/tty", "cbreak", "min", "1").Run()
 	exec.Command("stty", sttyFlag, "/dev/tty", "-echo").Run()
-	defer exec.Command("stty", sttyFlag, "/dev/tty", "echo").Run()
+	defer exec.Command("stty", sttyFlag, "/dev/tty", "echo", "icanon").Run()
 
 	buf := make([]byte, 3)
 	for {

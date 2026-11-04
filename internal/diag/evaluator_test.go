@@ -145,3 +145,30 @@ func TestEvaluateNilSnapshot(t *testing.T) {
 		t.Fatalf("expected waiting status desc, got %s", res.StatusDesc)
 	}
 }
+
+func TestEvaluateProxyHighTLSDelay(t *testing.T) {
+	// 模拟代理环境下：TCP仅为到本地代理客户端耗时(1ms)，但代理跨洋TLS高达4.2s，TTFB 4.5s
+	// 此时必须判定为跨洋海缆/BGP绕路瓶颈，严禁误判为服务端推理排队
+	snap := &probe.ProbeSnapshot{
+		Target: probe.NewTarget("OpenAI", "https://api.openai.com", "api.openai.com:443"),
+		DNS:    2 * time.Millisecond,
+		TCP:    1 * time.Millisecond,
+		TLS:    4200 * time.Millisecond,
+		TTFB:   4500 * time.Millisecond,
+	}
+	env := &probe.EnvironmentInfo{
+		ProxyEnabled: true,
+		ProxyURL:     "http://127.0.0.1:7890",
+	}
+	res := Evaluate(snap, env)
+
+	if res.Level != LevelWarning {
+		t.Errorf("expected level WARNING for proxy TLS congestion, got %v", res.Level)
+	}
+	if !strings.Contains(res.Bottleneck, "海缆") && !strings.Contains(res.Bottleneck, "BGP 路由绕路") {
+		t.Fatalf("expected network/BGP bottleneck, got %s", res.Bottleneck)
+	}
+	if strings.Contains(res.Bottleneck, "模型推理排队") {
+		t.Fatalf("must NOT attribute proxy TLS delay to server queue bottleneck: %s", res.Bottleneck)
+	}
+}

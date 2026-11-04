@@ -16,7 +16,7 @@ const (
 	MaxDNSLatency     = 60 * time.Millisecond
 	MaxAsiaTCPRTT     = 90 * time.Millisecond
 	MaxUSTCPRTT       = 180 * time.Millisecond
-	MaxTLSLatency     = 100 * time.Millisecond
+	MaxTLSLatency     = 180 * time.Millisecond
 	MaxNormalTTFB     = 2000 * time.Millisecond
 	SevereServerQueue = 3000 * time.Millisecond
 )

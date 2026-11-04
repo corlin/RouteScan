@@ -56,19 +56,21 @@ func DetectEnvironment() *EnvironmentInfo {
 	return info
 }
 
+var (
+	reHTTPHost  = regexp.MustCompile(`HTTPProxy\s*:\s*([^\s]+)`)
+	reHTTPPort  = regexp.MustCompile(`HTTPPort\s*:\s*([0-9]+)`)
+	reHTTPSHost = regexp.MustCompile(`HTTPSProxy\s*:\s*([^\s]+)`)
+	reHTTPSPort = regexp.MustCompile(`HTTPSPort\s*:\s*([0-9]+)`)
+	reSOCKSHost = regexp.MustCompile(`SOCKSProxy\s*:\s*([^\s]+)`)
+	reSOCKSPort = regexp.MustCompile(`SOCKSPort\s*:\s*([0-9]+)`)
+)
+
 // parseScutilOutput extracts proxy configurations from macOS `scutil --proxy` output.
 func parseScutilOutput(out string) *EnvironmentInfo {
 	info := &EnvironmentInfo{}
 	httpEnabled := strings.Contains(out, "HTTPEnable : 1")
 	httpsEnabled := strings.Contains(out, "HTTPSEnable : 1")
 	socksEnabled := strings.Contains(out, "SOCKSEnable : 1")
-
-	reHTTPHost := regexp.MustCompile(`HTTPProxy\s*:\s*([^\s]+)`)
-	reHTTPPort := regexp.MustCompile(`HTTPPort\s*:\s*([0-9]+)`)
-	reHTTPSHost := regexp.MustCompile(`HTTPSProxy\s*:\s*([^\s]+)`)
-	reHTTPSPort := regexp.MustCompile(`HTTPSPort\s*:\s*([0-9]+)`)
-	reSOCKSHost := regexp.MustCompile(`SOCKSProxy\s*:\s*([^\s]+)`)
-	reSOCKSPort := regexp.MustCompile(`SOCKSPort\s*:\s*([0-9]+)`)
 
 	if httpEnabled {
 		hMatch := reHTTPHost.FindStringSubmatch(out)

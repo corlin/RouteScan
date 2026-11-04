@@ -42,15 +42,10 @@ func ExportSnapshot(path string, targets []probe.Target, state *probe.StateManag
 		if snap == nil {
 			continue
 		}
-		status := "正常"
-		if snap.Err != nil {
-			status = "异常"
-		} else if snap.TCP < 50*time.Millisecond {
-			status = "极佳"
-		}
+		d := diag.Evaluate(snap, env)
 		fmt.Fprintf(f, "| %s | %d | %d | %d | %d | %d | %.1f%% | %s |\n",
 			tgt.Name, snap.Hops, snap.DNS.Milliseconds(), snap.TCP.Milliseconds(),
-			snap.TLS.Milliseconds(), snap.TTFB.Milliseconds(), snap.PacketLoss, status)
+			snap.TLS.Milliseconds(), snap.TTFB.Milliseconds(), snap.PacketLoss, d.Level)
 	}
 
 	fmt.Fprintf(f, "\n## 2. CCIE 专家诊断与瓶颈分析\n\n")

@@ -9,12 +9,26 @@ import (
 	"os/signal"
 	"routeScan/internal/probe"
 	"routeScan/internal/tui"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
 
+// getTargetProxy 决定目标探测所用的代理配置。
+// 本地网关严禁走代理，强制直连，防止局域网请求被本地代理客户端丢弃。
+func getTargetProxy(t probe.Target, configuredProxy string, env *probe.EnvironmentInfo) string {
+	if t.Name == "本地网关" || (env != nil && env.GatewayIP != "" && (t.Host == env.GatewayIP || strings.HasPrefix(t.Host, env.GatewayIP))) {
+		return ""
+	}
+	return configuredProxy
+}
+
 func main() {
+	// 无论以何种方式退出（按 q、Ctrl+C、异常终止等），均 100% 恢复终端正常键入与回显
+	defer tui.RestoreTerminal()
+
 	proxyFlag := flag.String("p", "", "手动指定代理服务器 (如 http://127.0.0.1:7890)")
 	intervalFlag := flag.Duration("i", 1500*time.Millisecond, "采样刷新周期")
 	directFlag := flag.Bool("d", false, "强制直连模式 (忽略代理)")
@@ -52,7 +66,8 @@ func main() {
 			wg.Add(1)
 			go func(t probe.Target) {
 				defer wg.Done()
-				snap, _ := probe.MeasureTarget(t, activeProxy)
+				targetProxy := getTargetProxy(t, activeProxy, env)
+				snap, _ := probe.MeasureTarget(t, targetProxy)
 				traceHost := t.Host
 				if h, _, err := net.SplitHostPort(traceHost); err == nil {
 					traceHost = h
@@ -81,7 +96,6 @@ func main() {
 
 	// 4. 交互式 TUI 模式
 	tui.EnterAltScreen()
-	defer tui.ExitAltScreen()
 
 	stopChan := make(chan struct{})
 	keyChan := make(chan tui.KeyType, 10)
@@ -96,25 +110,58 @@ func main() {
 	ticker := time.NewTicker(*intervalFlag)
 	defer ticker.Stop()
 
-	// 探针触发函数
+	// 探针并发防抖标志
+	var isProbing atomic.Bool
+
+	// 探针触发函数（支持并发防抖，防止协程堆积）
 	runProbe := func() {
-		currentProxy := ""
-		if !isDirect && env.ProxyEnabled {
-			currentProxy = env.ProxyURL
+		if !isProbing.CompareAndSwap(false, true) {
+			return // 上一次探测尚未完成，跳过本次触发
 		}
-		for _, tgt := range targets {
-			go func(t probe.Target) {
-				snap, _ := probe.MeasureTarget(t, currentProxy)
-				if snap.Hops <= 0 {
-					snap.Hops = 14
-				}
-				state.Update(t.Name, snap)
-			}(tgt)
-		}
+		go func() {
+			defer isProbing.Store(false)
+			currentProxy := ""
+			if !isDirect && env.ProxyEnabled {
+				currentProxy = env.ProxyURL
+			}
+			var wg sync.WaitGroup
+			for _, tgt := range targets {
+				wg.Add(1)
+				go func(t probe.Target) {
+					defer wg.Done()
+					targetProxy := getTargetProxy(t, currentProxy, env)
+					snap, _ := probe.MeasureTarget(t, targetProxy)
+					state.Update(t.Name, snap)
+				}(tgt)
+			}
+			wg.Wait()
+		}()
 	}
 
-	// 首次立即探测并初始渲染
+	// 真实后台逐跳路由探测（异步执行，带防重叠锁）
+	var traceInProgress sync.Map
+	triggerTrace := func(t probe.Target) {
+		if _, loaded := traceInProgress.LoadOrStore(t.Name, true); loaded {
+			return
+		}
+		go func(target probe.Target) {
+			defer traceInProgress.Delete(target.Name)
+			traceHost := target.Host
+			if h, _, err := net.SplitHostPort(traceHost); err == nil {
+				traceHost = h
+			}
+			hops, totalHops, err := probe.TraceHops(traceHost, 15)
+			if err == nil && len(hops) > 0 {
+				state.UpdateHops(target.Name, hops, totalHops)
+			}
+		}(t)
+	}
+
+	// 首次立即探测与初始后台逐跳路由追踪
 	runProbe()
+	for _, tgt := range targets {
+		triggerTrace(tgt)
+	}
 	fmt.Print(tui.RenderDashboard(targets, state, selectedIdx, env, isDirect))
 
 	// 主事件循环
@@ -131,16 +178,19 @@ func main() {
 			case tui.KeyUp:
 				if selectedIdx > 0 {
 					selectedIdx--
+					triggerTrace(targets[selectedIdx])
 				}
 			case tui.KeyDown:
 				if selectedIdx < len(targets)-1 {
 					selectedIdx++
+					triggerTrace(targets[selectedIdx])
 				}
 			case tui.KeyProxyToggle:
 				isDirect = !isDirect
 				runProbe()
 			case tui.KeyRefresh:
 				runProbe()
+				triggerTrace(targets[selectedIdx])
 			case tui.KeySnapshot:
 				tui.ExportSnapshot("routescan_snapshot.md", targets, state, env)
 			}
@@ -148,6 +198,9 @@ func main() {
 
 		case <-ticker.C:
 			runProbe()
+			if curSnap := state.Get(targets[selectedIdx].Name); curSnap == nil || len(curSnap.HopsList) == 0 {
+				triggerTrace(targets[selectedIdx])
+			}
 			fmt.Print(tui.RenderDashboard(targets, state, selectedIdx, env, isDirect))
 		}
 	}

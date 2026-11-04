@@ -1,5 +1,5 @@
 BINARY=routescan
-GO?=/opt/homebrew/bin/go
+GO ?= $(shell which go 2>/dev/null || echo /opt/homebrew/bin/go)
 
 all: build
 

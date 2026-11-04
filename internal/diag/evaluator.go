@@ -63,24 +63,33 @@ func Evaluate(snap *probe.ProbeSnapshot, env *probe.EnvironmentInfo) *Diagnosis 
 	}
 
 	// 3. 网络传输层 (TCP/TLS) 瓶颈分析
-	tcpRTT := snap.TCP
-	if tcpRTT > MaxUSTCPRTT {
+	// 在代理环境中，snap.TCP 仅代表到本地代理客户端的握手（通常 <1ms），真实的端到端跨洋网络 RTT 体现在 snap.TLS。
+	effectiveRTT := snap.TCP
+	if (env != nil && env.ProxyEnabled) || snap.Target.IsProxy || snap.TLS > 0 {
+		if snap.TLS > effectiveRTT {
+			effectiveRTT = snap.TLS
+		}
+	}
+
+	if effectiveRTT > MaxUSTCPRTT || snap.TLS > MaxTLSLatency {
 		return &Diagnosis{
 			Level:          LevelWarning,
 			StatusDesc:     "跨洋线路拥塞或绕路",
 			Bottleneck:     "跨国骨干海缆 / BGP 路由绕路",
-			Breakdown:      fmt.Sprintf("TCP 握手 RTT %v (超出中美直连基准 %v)", tcpRTT, MaxUSTCPRTT),
+			Breakdown:      fmt.Sprintf("有效网络握手耗时 %v (TCP: %v, TLS: %v, 超出基准)", effectiveRTT, snap.TCP, snap.TLS),
 			Recommendation: "代理节点路由可能绕道欧洲或海缆高峰期拥堵，建议切换节点至香港/日本/美西优化线路。",
 		}
 	}
 
 	// 4. 服务端排队与推理延迟 (TTFB) 瓶颈分析
-	if snap.TTFB > SevereServerQueue && tcpRTT <= MaxUSTCPRTT {
+	// 净服务端排队处理耗时应剔除网络握手层耗时
+	serverProcTime := snap.TTFB - snap.TotalHandshake()
+	if serverProcTime > SevereServerQueue && effectiveRTT <= MaxUSTCPRTT && snap.TLS <= MaxTLSLatency {
 		return &Diagnosis{
 			Level:          LevelNormal,
 			StatusDesc:     "网络通畅，服务端排队",
 			Bottleneck:     "官方服务端/模型推理排队",
-			Breakdown:      fmt.Sprintf("网络握手仅 %v，但首字节耗时 %v", tcpRTT+snap.TLS, snap.TTFB),
+			Breakdown:      fmt.Sprintf("网络握手仅 %v (TCP: %v, TLS: %v)，净服务端处理耗时 %v", snap.TotalHandshake(), snap.TCP, snap.TLS, serverProcTime),
 			Recommendation: "当前网络链路极好，卡顿系官方 API 负载过高或正在思考，属正常应用层耗时。",
 		}
 	}

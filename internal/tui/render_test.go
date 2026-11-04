@@ -45,8 +45,8 @@ func TestRenderTableFormat(t *testing.T) {
 		Err:    os.ErrNotExist,
 	}
 	errRow := formatTableRow(errSnap, false)
-	if !strings.Contains(errRow, "ERROR") {
-		t.Fatalf("expected ERROR status for err snapshot, got: %s", errRow)
+	if !strings.Contains(errRow, "CRITICAL") {
+		t.Fatalf("expected CRITICAL status for err snapshot, got: %s", errRow)
 	}
 }
 
@@ -141,6 +141,7 @@ func TestScreenFunctions(t *testing.T) {
 	EnterAltScreen()
 	ClearScreen()
 	ExitAltScreen()
+	RestoreTerminal()
 }
 
 func TestParseKey(t *testing.T) {

@@ -3,6 +3,8 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
+	"runtime"
 )
 
 // EnterAltScreen switches to the alternate screen buffer, clears it, and hides the cursor.
@@ -18,4 +20,15 @@ func ExitAltScreen() {
 // ClearScreen clears the terminal screen and positions the cursor at row 1, col 1.
 func ClearScreen() {
 	fmt.Print("\033[2J\033[H")
+}
+
+// RestoreTerminal restores terminal echo, canonical mode, cursor visibility,
+// and exits the alternate screen buffer safely across platforms.
+func RestoreTerminal() {
+	sttyFlag := "-f"
+	if runtime.GOOS == "linux" {
+		sttyFlag = "-F"
+	}
+	exec.Command("stty", sttyFlag, "/dev/tty", "echo", "icanon").Run()
+	ExitAltScreen()
 }

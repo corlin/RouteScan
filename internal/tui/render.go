@@ -34,13 +34,13 @@ func Render(targets []probe.Target, state *probe.StateManager, selectedIdx int, 
 	return RenderDashboard(targets, state, selectedIdx, env, isDirect)
 }
 
-func formatTableRow(snap *probe.ProbeSnapshot, isSelected bool) string {
+func formatTableRow(snap *probe.ProbeSnapshot, isSelected bool, env ...*probe.EnvironmentInfo) string {
 	cursor := "  "
 	if isSelected {
 		cursor = "> "
 	}
 	if snap == nil {
-		return fmt.Sprintf("%s%-20s  (等待初次采样...)", cursor, "Target")
+		return fmt.Sprintf("%s%-18s  (等待初次采样...)", cursor, "Target")
 	}
 
 	hopsStr := fmt.Sprintf("%d", snap.Hops)
@@ -48,12 +48,13 @@ func formatTableRow(snap *probe.ProbeSnapshot, isSelected bool) string {
 		hopsStr = "-"
 	}
 
-	statusStr := "NORMAL"
-	if snap.Err != nil {
-		statusStr = "ERROR"
-	} else if snap.TCP < 50*time.Millisecond {
-		statusStr = "OPTIMAL"
+	var curEnv *probe.EnvironmentInfo
+	if len(env) > 0 {
+		curEnv = env[0]
 	}
+
+	d := diag.Evaluate(snap, curEnv)
+	statusStr := string(d.Level)
 
 	return fmt.Sprintf("%s%-18s %5s %8s %9s %8s %9s %7.1f%% %7s %8s",
 		cursor,
@@ -105,7 +106,7 @@ func RenderDashboard(targets []probe.Target, state *probe.StateManager, selected
 		if state != nil {
 			snap = state.Get(tgt.Name)
 		}
-		row := formatTableRow(snap, i == selectedIdx)
+		row := formatTableRow(snap, i == selectedIdx, env)
 		if i == selectedIdx {
 			sb.WriteString(fmt.Sprintf("\033[1;32m%s\033[0m\n", row))
 		} else {
