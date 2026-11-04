@@ -152,3 +152,81 @@ func TestTraceHopsGeoAnnotation(t *testing.T) {
 		t.Fatalf("expected empty Geo when mgr is nil, got %q", hopNilMgr.Geo)
 	}
 }
+
+func TestBuildProxyTopology(t *testing.T) {
+	geoMgr := geoip.NewManager("") // 使用内置规则
+	defer geoMgr.Close()
+
+	env := &EnvironmentInfo{
+		GatewayIP:      "192.168.5.1",
+		HasTUN:         true,
+		ProxyEnabled:   true,
+		ProxyURL:       "http://127.0.0.1:7890",
+		EgressIP:       "109.61.127.58",
+		EgressLocation: "韩国 仁川 (AS199524 G-Core Labs S.A.)",
+	}
+
+	snap := &ProbeSnapshot{
+		Target: NewTarget("Anthropic Claude", "https://api.anthropic.com", "api.anthropic.com:443"),
+		DNS:    0,
+		TCP:    2 * time.Millisecond,
+		TLS:    428 * time.Millisecond,
+		TTFB:   726 * time.Millisecond,
+	}
+
+	// 1. 本地网关测试
+	gwTarget := NewTarget("本地网关", "http://192.168.5.1", "192.168.5.1")
+	gwHops := BuildProxyTopology(gwTarget, env, snap, geoMgr)
+	if len(gwHops) != 1 {
+		t.Fatalf("expected 1 hop for gateway, got %d", len(gwHops))
+	}
+	if gwHops[0].IP != "192.168.5.1" {
+		t.Fatalf("expected IP 192.168.5.1, got %s", gwHops[0].IP)
+	}
+
+	// 2. 外部服务 5 跳拓扑测试 (Anthropic Claude)
+	aiHops := BuildProxyTopology(snap.Target, env, snap, geoMgr)
+	if len(aiHops) != 5 {
+		t.Fatalf("expected 5 hops for AI service under proxy, got %d", len(aiHops))
+	}
+
+	// Hop 1: 物理网关
+	if aiHops[0].HopNum != 1 || aiHops[0].IP != "192.168.5.1" {
+		t.Fatalf("unexpected hop 1: %+v", aiHops[0])
+	}
+	// Hop 2: TUN 网卡
+	if aiHops[1].HopNum != 2 || aiHops[1].IP != "198.18.0.1" {
+		t.Fatalf("unexpected hop 2: %+v", aiHops[1])
+	}
+	// Hop 3: 境外出口
+	if aiHops[2].HopNum != 3 || aiHops[2].IP != "109.61.127.58" || aiHops[2].RTT1 != 428*time.Millisecond {
+		t.Fatalf("unexpected hop 3: %+v", aiHops[2])
+	}
+	if !strings.Contains(aiHops[2].Geo, "韩国") {
+		t.Fatalf("expected 韩国 in hop 3 geo, got %s", aiHops[2].Geo)
+	}
+	// Hop 4: CDN Anycast
+	if aiHops[3].HopNum != 4 || !strings.Contains(aiHops[3].Host, "Cloudflare") {
+		t.Fatalf("unexpected hop 4: %+v", aiHops[3])
+	}
+	// Hop 5: 模型 API
+	if aiHops[4].HopNum != 5 || aiHops[4].RTT1 != 726*time.Millisecond {
+		t.Fatalf("unexpected hop 5: %+v", aiHops[4])
+	}
+
+	// 3. 非 TUN 代理模式测试
+	envNoTUN := &EnvironmentInfo{
+		GatewayIP:    "192.168.1.1",
+		HasTUN:       false,
+		ProxyEnabled: true,
+		ProxyURL:     "http://127.0.0.1:7890",
+		EgressIP:     "109.61.127.58",
+	}
+	aiHopsNoTUN := BuildProxyTopology(snap.Target, envNoTUN, snap, geoMgr)
+	if len(aiHopsNoTUN) != 5 {
+		t.Fatalf("expected 5 hops, got %d", len(aiHopsNoTUN))
+	}
+	if aiHopsNoTUN[1].IP != "127.0.0.1" {
+		t.Fatalf("expected 127.0.0.1 for hop 2 in non-TUN mode, got %s", aiHopsNoTUN[1].IP)
+	}
+}

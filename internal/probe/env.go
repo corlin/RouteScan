@@ -2,17 +2,23 @@ package probe
 
 import (
 	"bufio"
+	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // EnvironmentInfo holds information about local network environment and proxy settings.
 type EnvironmentInfo struct {
+	mu              sync.RWMutex
 	ProxyEnabled    bool
 	ProxyURL        string
 	ProxyHost       string
@@ -22,6 +28,25 @@ type EnvironmentInfo struct {
 	HasTUN          bool
 	EgressIP        string
 	EgressLocation  string
+}
+
+func (e *EnvironmentInfo) SetEgress(ip, loc string) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.EgressIP = ip
+	e.EgressLocation = loc
+}
+
+func (e *EnvironmentInfo) GetEgress() (string, string) {
+	if e == nil {
+		return "", ""
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.EgressIP, e.EgressLocation
 }
 
 // DetectEnvironment inspects the local macOS network environment,
@@ -199,4 +224,53 @@ func findDefaultGatewayFallback() string {
 		}
 	}
 	return "127.0.0.1"
+}
+
+// DetectEgressIP queries the public IP through the active proxy or direct connection.
+// It prioritizes Cloudflare trace (fast, reliable CDN edge) with ipify fallback.
+func DetectEgressIP(proxyURL string) (string, error) {
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+	}
+	if proxyURL != "" {
+		if u, err := url.Parse(proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(u)
+		}
+	} else {
+		transport.Proxy = http.ProxyFromEnvironment
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   3500 * time.Millisecond,
+	}
+
+	// 1. 优先尝试 cloudflare trace (速度极快，解析出海 IP 成功率高)
+	respTrace, errTrace := client.Get("https://cloudflare.com/cdn-cgi/trace")
+	if errTrace == nil && respTrace.StatusCode == http.StatusOK {
+		defer respTrace.Body.Close()
+		scanner := bufio.NewScanner(respTrace.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "ip=") {
+				ip := strings.TrimSpace(strings.TrimPrefix(line, "ip="))
+				if net.ParseIP(ip) != nil {
+					return ip, nil
+				}
+			}
+		}
+	}
+
+	// 2. 备选尝试 api.ipify.org
+	resp, err := client.Get("https://api.ipify.org")
+	if err == nil && resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		ip := strings.TrimSpace(string(body))
+		if net.ParseIP(ip) != nil {
+			return ip, nil
+		}
+	}
+
+	return "", fmt.Errorf("无法获取出海 IP")
 }

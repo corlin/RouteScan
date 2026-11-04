@@ -64,4 +64,3 @@ func TestNilManager(t *testing.T) {
 
 	mgr.Close() // Should not panic
 }
-

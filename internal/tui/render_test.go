@@ -210,7 +210,7 @@ func TestExportSnapshot(t *testing.T) {
 			{HopNum: 1, IP: "192.168.1.1", Host: "gateway.local", Geo: "局域网 [本地局域网]", RTT1: time.Millisecond, RTT2: 2 * time.Millisecond, Loss: 0},
 			{HopNum: 2, IP: "202.96.209.133", Host: "dns.sh.cn", Geo: "中国 上海 电信 [AS4812]", RTT1: 5 * time.Millisecond, RTT2: 6 * time.Millisecond, Loss: 0},
 		},
-		Timestamp:  time.Now(),
+		Timestamp: time.Now(),
 	})
 	state.Update("ErrorService", &probe.ProbeSnapshot{
 		Target:    targets[1],

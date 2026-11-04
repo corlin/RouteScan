@@ -71,6 +71,17 @@ func main() {
 	defer geoMgr.Close()
 	geoip.EnsureDatabase(geoMgr, true, activeProxy)
 
+	// 探测出海出口真实 IP
+	if activeProxy != "" {
+		if egressIP, err := probe.DetectEgressIP(activeProxy); err == nil {
+			egressLoc := ""
+			if loc := geoMgr.Lookup(egressIP); loc != nil {
+				egressLoc = loc.String()
+			}
+			env.SetEgress(egressIP, egressLoc)
+		}
+	}
+
 	// 2. 初始化测试目标
 	targets := []probe.Target{
 		probe.NewTarget("Anthropic Claude", "https://api.anthropic.com", "api.anthropic.com:443"),
@@ -91,13 +102,19 @@ func main() {
 				defer wg.Done()
 				targetProxy := getTargetProxy(t, activeProxy, env)
 				snap, _ := probe.MeasureTarget(t, targetProxy)
-				traceHost := t.Host
-				if h, _, err := net.SplitHostPort(traceHost); err == nil {
-					traceHost = h
+				if !*directFlag && env.ProxyEnabled && t.Name != "本地网关" {
+					hops := probe.BuildProxyTopology(t, env, snap, geoMgr)
+					snap.Hops = len(hops)
+					snap.HopsList = hops
+				} else {
+					traceHost := t.Host
+					if h, _, err := net.SplitHostPort(traceHost); err == nil {
+						traceHost = h
+					}
+					hops, totalHops, _ := probe.TraceHopsWithGeo(traceHost, 15, geoMgr)
+					snap.Hops = totalHops
+					snap.HopsList = hops
 				}
-				hops, totalHops, _ := probe.TraceHopsWithGeo(traceHost, 15, geoMgr)
-				snap.Hops = totalHops
-				snap.HopsList = hops
 				state.Update(t.Name, snap)
 			}(tgt)
 		}
@@ -154,6 +171,11 @@ func main() {
 					defer wg.Done()
 					targetProxy := getTargetProxy(t, currentProxy, env)
 					snap, _ := probe.MeasureTarget(t, targetProxy)
+					if !isDirect && env.ProxyEnabled && t.Name != "本地网关" {
+						hops := probe.BuildProxyTopology(t, env, snap, geoMgr)
+						snap.Hops = len(hops)
+						snap.HopsList = hops
+					}
 					state.Update(t.Name, snap)
 				}(tgt)
 			}
@@ -161,7 +183,7 @@ func main() {
 		}()
 	}
 
-	// 真实后台逐跳路由探测（异步执行，带防重叠锁）
+	// 逐跳路由探测（异步执行，带防重叠锁）
 	var traceInProgress sync.Map
 	triggerTrace := func(t probe.Target) {
 		if _, loaded := traceInProgress.LoadOrStore(t.Name, true); loaded {
@@ -169,6 +191,12 @@ func main() {
 		}
 		go func(target probe.Target) {
 			defer traceInProgress.Delete(target.Name)
+			if !isDirect && env.ProxyEnabled && target.Name != "本地网关" {
+				curSnap := state.Get(target.Name)
+				hops := probe.BuildProxyTopology(target, env, curSnap, geoMgr)
+				state.UpdateHops(target.Name, hops, len(hops))
+				return
+			}
 			traceHost := target.Host
 			if h, _, err := net.SplitHostPort(traceHost); err == nil {
 				traceHost = h
@@ -180,12 +208,33 @@ func main() {
 		}(t)
 	}
 
+	// 动态感知与刷新出海出口 IP
+	refreshEgress := func() {
+		go func() {
+			currentProxy := ""
+			if !isDirect && env.ProxyEnabled {
+				currentProxy = env.ProxyURL
+			}
+			if currentProxy != "" {
+				if egressIP, err := probe.DetectEgressIP(currentProxy); err == nil {
+					egressLoc := ""
+					if loc := geoMgr.Lookup(egressIP); loc != nil {
+						egressLoc = loc.String()
+					}
+					env.SetEgress(egressIP, egressLoc)
+				}
+			}
+		}()
+	}
+
 	// 首次立即探测与初始后台逐跳路由追踪
 	runProbe()
 	for _, tgt := range targets {
 		triggerTrace(tgt)
 	}
 	fmt.Print(tui.RenderDashboard(targets, state, selectedIdx, env, isDirect))
+
+	tickCount := 0
 
 	// 主事件循环
 	for {
@@ -210,8 +259,11 @@ func main() {
 				}
 			case tui.KeyProxyToggle:
 				isDirect = !isDirect
+				refreshEgress()
 				runProbe()
+				triggerTrace(targets[selectedIdx])
 			case tui.KeyRefresh:
+				refreshEgress()
 				runProbe()
 				triggerTrace(targets[selectedIdx])
 			case tui.KeySnapshot:
@@ -220,10 +272,12 @@ func main() {
 			fmt.Print(tui.RenderDashboard(targets, state, selectedIdx, env, isDirect))
 
 		case <-ticker.C:
-			runProbe()
-			if curSnap := state.Get(targets[selectedIdx].Name); curSnap == nil || len(curSnap.HopsList) == 0 {
-				triggerTrace(targets[selectedIdx])
+			tickCount++
+			if tickCount%20 == 0 {
+				refreshEgress()
 			}
+			runProbe()
+			triggerTrace(targets[selectedIdx])
 			fmt.Print(tui.RenderDashboard(targets, state, selectedIdx, env, isDirect))
 		}
 	}
