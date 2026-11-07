@@ -111,9 +111,10 @@ func main() {
 					if h, _, err := net.SplitHostPort(traceHost); err == nil {
 						traceHost = h
 					}
-					hops, totalHops, _ := probe.TraceHopsWithGeo(traceHost, 15, geoMgr)
+					hops, totalHops, traceErr := probe.TraceHopsWithGeo(traceHost, 15, geoMgr)
 					snap.Hops = totalHops
 					snap.HopsList = hops
+					snap.TraceErr = traceErr
 				}
 				state.Update(t.Name, snap)
 			}(tgt)
@@ -135,6 +136,10 @@ func main() {
 	}
 
 	// 4. 交互式 TUI 模式
+	if err := tui.InitTerminal(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
 	tui.EnterAltScreen()
 
 	stopChan := make(chan struct{})
@@ -158,10 +163,11 @@ func main() {
 		if !isProbing.CompareAndSwap(false, true) {
 			return // 上一次探测尚未完成，跳过本次触发
 		}
+		direct := isDirect // Capture mode on the event-loop goroutine.
 		go func() {
 			defer isProbing.Store(false)
 			currentProxy := ""
-			if !isDirect && env.ProxyEnabled {
+			if !direct && env.ProxyEnabled {
 				currentProxy = env.ProxyURL
 			}
 			var wg sync.WaitGroup
@@ -171,7 +177,7 @@ func main() {
 					defer wg.Done()
 					targetProxy := getTargetProxy(t, currentProxy, env)
 					snap, _ := probe.MeasureTarget(t, targetProxy)
-					if !isDirect && env.ProxyEnabled && t.Name != "本地网关" {
+					if !direct && env.ProxyEnabled && t.Name != "本地网关" {
 						hops := probe.BuildProxyTopology(t, env, snap, geoMgr)
 						snap.Hops = len(hops)
 						snap.HopsList = hops
@@ -189,9 +195,10 @@ func main() {
 		if _, loaded := traceInProgress.LoadOrStore(t.Name, true); loaded {
 			return
 		}
+		direct := isDirect
 		go func(target probe.Target) {
 			defer traceInProgress.Delete(target.Name)
-			if !isDirect && env.ProxyEnabled && target.Name != "本地网关" {
+			if !direct && env.ProxyEnabled && target.Name != "本地网关" {
 				curSnap := state.Get(target.Name)
 				hops := probe.BuildProxyTopology(target, env, curSnap, geoMgr)
 				state.UpdateHops(target.Name, hops, len(hops))
@@ -202,17 +209,16 @@ func main() {
 				traceHost = h
 			}
 			hops, totalHops, err := probe.TraceHopsWithGeo(traceHost, 15, geoMgr)
-			if err == nil && len(hops) > 0 {
-				state.UpdateHops(target.Name, hops, totalHops)
-			}
+			state.UpdateHops(target.Name, hops, totalHops, err)
 		}(t)
 	}
 
 	// 动态感知与刷新出海出口 IP
 	refreshEgress := func() {
+		direct := isDirect
 		go func() {
 			currentProxy := ""
-			if !isDirect && env.ProxyEnabled {
+			if !direct && env.ProxyEnabled {
 				currentProxy = env.ProxyURL
 			}
 			if currentProxy != "" {

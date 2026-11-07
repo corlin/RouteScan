@@ -58,6 +58,11 @@ func ExportSnapshot(path string, targets []probe.Target, state *probe.StateManag
 		fmt.Fprintf(f, "### %s\n", tgt.Name)
 		fmt.Fprintf(f, "- **瓶颈归因**: %s\n", d.Bottleneck)
 		fmt.Fprintf(f, "- **耗时拆解**: %s\n", d.Breakdown)
+		if state != nil {
+			if snap := state.Get(tgt.Name); snap != nil && snap.Err != nil {
+				fmt.Fprintf(f, "- **探测错误**: %v\n", snap.Err)
+			}
+		}
 		if d.Recommendation != "" {
 			fmt.Fprintf(f, "- **优化建议**: %s\n", d.Recommendation)
 		}
@@ -71,11 +76,20 @@ func ExportSnapshot(path string, targets []probe.Target, state *probe.StateManag
 			continue
 		}
 		snap := state.Get(tgt.Name)
-		if snap == nil || len(snap.HopsList) == 0 {
+		if snap == nil {
+			continue
+		}
+		if snap.TraceErr != nil {
+			fmt.Fprintf(f, "### %s 路由追踪未完成\n\n%v\n\n", tgt.Name, snap.TraceErr)
+		}
+		if len(snap.HopsList) == 0 {
 			continue
 		}
 		hasHops = true
 		fmt.Fprintf(f, "### %s 逐跳明细\n\n", tgt.Name)
+		if snap.Target.IsProxy {
+			fmt.Fprint(f, "代理逻辑拓扑：包含估算节点与耗时，非 ICMP 逐跳实测。\n\n")
+		}
 		fmt.Fprintf(f, "| 跳数 | IP 地址 | 地理位置 & 运营商/AS | 第1次 | 第2次 | 丢包率 |\n")
 		fmt.Fprintf(f, "| :--- | :--- | :--- | :--- | :--- | :--- |\n")
 		for _, h := range snap.HopsList {

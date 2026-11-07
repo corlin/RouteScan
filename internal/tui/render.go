@@ -92,8 +92,12 @@ func formatTableRow(snap *probe.ProbeSnapshot, isSelected bool, env ...*probe.En
 	if isSelected {
 		cursor = "> "
 	}
-	if snap == nil {
-		return fmt.Sprintf("%s%s  (等待初次采样...)", cursor, formatColumn("Target", 18))
+	if snap == nil || snap.Target.URL == "" {
+		name := "Target"
+		if snap != nil && snap.Target.Name != "" {
+			name = snap.Target.Name
+		}
+		return fmt.Sprintf("%s%s  (等待初次采样...)", cursor, formatColumn(name, 18))
 	}
 
 	hopsStr := fmt.Sprintf("%d", snap.Hops)
@@ -199,6 +203,12 @@ func RenderDashboard(targets []probe.Target, state *probe.StateManager, selected
 
 		sb.WriteString(fmt.Sprintf("\033[1;36m╠═══════════════════════════════════════════════════════════════════════════════════════════════╣\033[0m\033[K\n"))
 		sb.WriteString(fmt.Sprintf("\033[1;35m【逐跳路由明细: %s】 (按 ↑/↓ 切换目标)\033[0m\033[K\n", curTarget.Name))
+		if curSnap != nil && curSnap.Target.IsProxy {
+			sb.WriteString("   代理逻辑拓扑：包含估算节点与耗时，非 ICMP 逐跳实测。\033[K\n")
+		}
+		if curSnap != nil && curSnap.TraceErr != nil {
+			sb.WriteString(fmt.Sprintf("   路由追踪未完成: %v\033[K\n", curSnap.TraceErr))
+		}
 		sb.WriteString(fmt.Sprintf("  跳数   IP 地址           地理位置 & 运营商/AS                          第1次     第2次     丢包率\033[K\n"))
 
 		if curSnap != nil && len(curSnap.HopsList) > 0 {
@@ -211,9 +221,7 @@ func RenderDashboard(targets []probe.Target, state *probe.StateManager, selected
 					h.HopNum, h.IP, formatColumn(geoInfo, 38), formatDuration(h.RTT1), formatDuration(h.RTT2), h.Loss))
 			}
 		} else {
-			sb.WriteString(fmt.Sprintf("   1     %-16s  %s %8s         -     0.0%%\033[K\n", gatewayIP, formatColumn("本地局域网 / 默认网关", 38), "0.8ms"))
-			sb.WriteString(fmt.Sprintf("   2     %-16s  %s %8s         -     0.0%%\033[K\n", "10.x.x.x", formatColumn("城域网 / 骨干专线出口", 38), "3.2ms"))
-			sb.WriteString(fmt.Sprintf("   ...   (后台探测路由追踪中，将在下个周期呈现完整跳数与地理归属...)\033[K\n"))
+			sb.WriteString("   暂无逐跳探测数据；探测未完成或网络未返回 ICMP 响应。\033[K\n")
 		}
 	}
 

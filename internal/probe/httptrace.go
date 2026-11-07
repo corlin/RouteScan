@@ -3,143 +3,128 @@ package probe
 import (
 	"context"
 	"crypto/tls"
-	"io"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
-// MeasureTarget performs microsecond-level network timing probing against target
-// using net/http/httptrace to capture DNS resolution, TCP handshake, TLS handshake,
-// and Time To First Byte (TTFB). It supports optional proxy routing.
-func MeasureTarget(target Target, proxyURL string) (*ProbeSnapshot, error) {
-	snap := &ProbeSnapshot{
-		Target:    target,
-		Timestamp: time.Now(),
-	}
+// attemptTiming owns one request's callbacks. httptrace may invoke them from
+// multiple goroutines, including simultaneous IPv4/IPv6 connection attempts.
+type attemptTiming struct {
+	mu                          sync.Mutex
+	started, dnsStart, tlsStart time.Time
+	connections                 map[string]time.Time
+	result                      TimingResult
+}
 
-	var dnsStart, dnsDone time.Time
-	var connStart, connDone time.Time
-	var tlsStart, tlsDone time.Time
-	var firstByteDone time.Time
-
-	trace := &httptrace.ClientTrace{
-		DNSStart: func(info httptrace.DNSStartInfo) {
-			dnsStart = time.Now()
+func (t *attemptTiming) trace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		DNSStart: func(httptrace.DNSStartInfo) {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			t.dnsStart = time.Now()
 		},
-		DNSDone: func(info httptrace.DNSDoneInfo) {
-			dnsDone = time.Now()
+		DNSDone: func(httptrace.DNSDoneInfo) {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			if !t.dnsStart.IsZero() {
+				t.result.DNS = time.Since(t.dnsStart)
+			}
 		},
 		ConnectStart: func(network, addr string) {
-			connStart = time.Now()
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			t.connections[network+" "+addr] = time.Now()
 		},
 		ConnectDone: func(network, addr string, err error) {
-			connDone = time.Now()
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			key := network + " " + addr
+			if start, ok := t.connections[key]; ok && err == nil && t.result.TCP == 0 {
+				t.result.TCP = time.Since(start)
+			}
+			delete(t.connections, key)
 		},
 		TLSHandshakeStart: func() {
-			tlsStart = time.Now()
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			t.tlsStart = time.Now()
 		},
-		TLSHandshakeDone: func(state tls.ConnectionState, err error) {
-			tlsDone = time.Now()
+		TLSHandshakeDone: func(tls.ConnectionState, error) {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			if !t.tlsStart.IsZero() {
+				t.result.TLS = time.Since(t.tlsStart)
+			}
 		},
 		GotFirstResponseByte: func() {
-			firstByteDone = time.Now()
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			if t.result.TTFB == 0 {
+				t.result.TTFB = time.Since(t.started)
+			}
 		},
 	}
+}
 
+func measureAttempt(ctx context.Context, client *http.Client, method, rawURL string, target Target) (*ProbeSnapshot, *http.Response, error) {
+	timing := &attemptTiming{started: time.Now(), connections: make(map[string]time.Time)}
+	snap := &ProbeSnapshot{Target: target, Timestamp: timing.started}
+	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, timing.trace()), method, rawURL, nil)
+	if err != nil {
+		snap.Err = err
+		return snap, nil, err
+	}
+	req.Header.Set("User-Agent", "RouteScan/1.0 (CCIE Network Inspector)")
+	resp, err := client.Do(req)
+	// Cancelled dials may finish after client.Do returns.
+	timing.mu.Lock()
+	snap.DNS, snap.TCP = timing.result.DNS, timing.result.TCP
+	snap.TLS, snap.TTFB = timing.result.TLS, timing.result.TTFB
+	timing.mu.Unlock()
+	snap.Err = err
+	if resp != nil {
+		snap.StatusCode = resp.StatusCode
+	}
+	return snap, resp, err
+}
+
+// MeasureTarget captures each HTTP phase without mixing HEAD and GET attempts.
+func MeasureTarget(target Target, proxyURL string) (*ProbeSnapshot, error) {
+	target.IsProxy = proxyURL != ""
 	rawURL := target.URL
 	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
 		rawURL = "https://" + rawURL
 	}
-
 	insecure := false
 	if u, err := url.Parse(rawURL); err == nil {
 		h := u.Hostname()
-		if h == "127.0.0.1" || h == "localhost" || h == "::1" {
-			insecure = true
-		}
+		insecure = h == "127.0.0.1" || h == "localhost" || h == "::1"
 	}
-
-	transport := &http.Transport{
-		DisableKeepAlives: true,
-		TLSClientConfig:   &tls.Config{InsecureSkipVerify: insecure},
-	}
-
+	transport := &http.Transport{DisableKeepAlives: true, TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure}}
+	defer transport.CloseIdleConnections()
 	if proxyURL != "" {
-		if pURL, err := url.Parse(proxyURL); err == nil {
-			transport.Proxy = http.ProxyURL(pURL)
+		pURL, err := url.Parse(proxyURL)
+		if err != nil {
+			return &ProbeSnapshot{Target: target, Timestamp: time.Now(), Err: err}, err
 		}
+		transport.Proxy = http.ProxyURL(pURL)
 	}
-
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   6 * time.Second,
-	}
-
+	client := &http.Client{Transport: transport, Timeout: 6 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodHead, rawURL, nil)
-	if err != nil {
-		req, err = http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodGet, rawURL, nil)
-		if err != nil {
-			snap.Err = err
-			return snap, err
-		}
-	}
-	req.Header.Set("User-Agent", "RouteScan/1.0 (CCIE Network Inspector)")
-
-	t0 := time.Now()
-	resp, err := client.Do(req)
-	if err != nil || (resp != nil && resp.StatusCode == http.StatusMethodNotAllowed) {
-		if resp != nil && resp.Body != nil {
-			io.Copy(io.Discard, resp.Body)
+	snap, resp, err := measureAttempt(ctx, client, http.MethodHead, rawURL, target)
+	if (err != nil || (resp != nil && resp.StatusCode == http.StatusMethodNotAllowed)) && ctx.Err() == nil {
+		if resp != nil {
 			resp.Body.Close()
 		}
-		// 某些端点 HEAD 被 405 拒绝或断开连接，回退尝试 GET
-		reqGet, errGet := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodGet, rawURL, nil)
-		if errGet == nil {
-			reqGet.Header.Set("User-Agent", "RouteScan/1.0 (CCIE Network Inspector)")
-			t0 = time.Now()
-			resp, err = client.Do(reqGet)
-		}
+		snap, resp, err = measureAttempt(ctx, client, http.MethodGet, rawURL, target)
 	}
-
-	if err != nil {
-		snap.Err = err
-		// 尽可能保留已完成阶段的时延
-		if !dnsStart.IsZero() && !dnsDone.IsZero() {
-			snap.DNS = dnsDone.Sub(dnsStart)
-		}
-		if !connStart.IsZero() && !connDone.IsZero() {
-			snap.TCP = connDone.Sub(connStart)
-		}
-		if !tlsStart.IsZero() && !tlsDone.IsZero() {
-			snap.TLS = tlsDone.Sub(tlsStart)
-		}
-		return snap, err
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-
-	snap.StatusCode = resp.StatusCode
-
-	if !dnsStart.IsZero() && !dnsDone.IsZero() {
-		snap.DNS = dnsDone.Sub(dnsStart)
-	}
-	if !connStart.IsZero() && !connDone.IsZero() {
-		snap.TCP = connDone.Sub(connStart)
-	}
-	if !tlsStart.IsZero() && !tlsDone.IsZero() {
-		snap.TLS = tlsDone.Sub(tlsStart)
-	}
-	if !firstByteDone.IsZero() {
-		snap.TTFB = firstByteDone.Sub(t0)
-	} else {
-		snap.TTFB = time.Since(t0)
-	}
-
-	return snap, nil
+	if resp != nil {
+		resp.Body.Close()
+	} // TTFB is complete; no GET body download is needed.
+	return snap, err
 }

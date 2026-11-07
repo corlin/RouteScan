@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -49,34 +48,13 @@ func (e *EnvironmentInfo) GetEgress() (string, string) {
 	return e.EgressIP, e.EgressLocation
 }
 
-// DetectEnvironment inspects the local macOS network environment,
+// DetectEnvironment inspects the local network environment,
 // reading system proxy settings, environment variables, default gateway and interfaces.
 func DetectEnvironment() *EnvironmentInfo {
-	info := &EnvironmentInfo{}
-
-	// 1. 探测 macOS 系统代理 (scutil --proxy)
-	cmd := exec.Command("scutil", "--proxy")
-	if out, err := cmd.Output(); err == nil {
-		parsed := parseScutilOutput(string(out))
-		info.ProxyEnabled = parsed.ProxyEnabled
-		info.ProxyURL = parsed.ProxyURL
-		info.ProxyHost = parsed.ProxyHost
-		info.ProxyPort = parsed.ProxyPort
-	}
+	info := detectSystemEnvironment()
 
 	// 环境变量兜底 (http_proxy / https_proxy / all_proxy)
 	resolveEnvProxyFallback(info)
-
-	// 2. 探测网关与网卡 (route -n get default)
-	routeCmd := exec.Command("route", "-n", "get", "default")
-	if out, err := routeCmd.Output(); err == nil {
-		parseRouteOutput(string(out), info)
-	}
-
-	if info.GatewayIP == "" {
-		// 局域网默认兜底查找
-		info.GatewayIP = findDefaultGatewayFallback()
-	}
 
 	return info
 }
@@ -161,6 +139,7 @@ func resolveEnvProxyFallback(info *EnvironmentInfo) {
 				target = "http://" + target
 			}
 			if u, err := url.Parse(target); err == nil {
+				info.ProxyURL = target
 				info.ProxyHost = u.Hostname()
 				if p, err := strconv.Atoi(u.Port()); err == nil {
 					info.ProxyPort = p

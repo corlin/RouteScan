@@ -1,12 +1,61 @@
 package probe
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
 )
+
+func TestMeasureTargetRetryDoesNotReuseTLSCompletion(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			// Fail each TLS attempt after it has started, forcing HEAD -> GET.
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 4096)
+				c.Read(buf)
+				time.Sleep(5 * time.Millisecond)
+				c.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n"))
+			}(conn)
+		}
+	}()
+	snap, err := MeasureTarget(NewTarget("TLS failure", "https://"+listener.Addr().String(), listener.Addr().String()), "")
+	if err == nil {
+		t.Fatal("expected failed TLS handshake")
+	}
+	if snap.TLS < 0 || snap.TCP < 0 || snap.DNS < 0 || snap.TTFB < 0 {
+		t.Fatalf("negative timings after retry: %+v", snap)
+	}
+}
+
+func TestMeasureTargetFailedRetryClearsPreviousTLS(t *testing.T) {
+	var ts *httptest.Server
+	ts = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The HEAD handshake completes, but the GET retry cannot connect.
+		ts.Listener.Close()
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+	defer ts.Close()
+	snap, err := MeasureTarget(NewTarget("retry", ts.URL, "localhost"), "")
+	if err == nil {
+		t.Fatal("expected connection failure on retry")
+	}
+	if snap.TLS != 0 {
+		t.Fatalf("GET retry reused HEAD handshake timing: %v", snap.TLS)
+	}
+}
 
 func TestMeasureTargetLocalServer(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

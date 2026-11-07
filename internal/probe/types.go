@@ -52,6 +52,7 @@ type ProbeSnapshot struct {
 	PacketLoss float64
 	Jitter     time.Duration
 	Err        error
+	TraceErr   error
 	Timestamp  time.Time
 }
 
@@ -83,6 +84,10 @@ func (s *StateManager) Update(name string, snap *ProbeSnapshot) {
 		}
 		if len(snap.HopsList) == 0 && len(prev.HopsList) > 0 {
 			snap.HopsList = prev.HopsList
+			snap.TraceErr = prev.TraceErr
+		}
+		if len(snap.HopsList) == 0 {
+			snap.TraceErr = prev.TraceErr
 		}
 	}
 
@@ -128,18 +133,21 @@ func (s *StateManager) Update(name string, snap *ProbeSnapshot) {
 	s.Snapshots[name] = snap
 }
 
-func (s *StateManager) UpdateHops(name string, hops []HopInfo, totalHops int) {
+func (s *StateManager) UpdateHops(name string, hops []HopInfo, totalHops int, traceErrors ...error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if snap, ok := s.Snapshots[name]; ok && snap != nil {
-		snap.Hops = totalHops
-		snap.HopsList = hops
-	} else {
-		s.Snapshots[name] = &ProbeSnapshot{
-			Hops:     totalHops,
-			HopsList: hops,
-		}
+	// Renderers hold published snapshots outside the lock. Replace rather than
+	// mutate them while a background trace is finishing.
+	snap := ProbeSnapshot{Target: Target{Name: name}}
+	if prev := s.Snapshots[name]; prev != nil {
+		snap = *prev
 	}
+	snap.Hops, snap.HopsList = totalHops, append([]HopInfo(nil), hops...)
+	snap.TraceErr = nil
+	if len(traceErrors) > 0 {
+		snap.TraceErr = traceErrors[0]
+	}
+	s.Snapshots[name] = &snap
 }
 
 func (s *StateManager) Get(name string) *ProbeSnapshot {

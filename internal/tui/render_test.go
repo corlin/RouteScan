@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+func TestDashboardDoesNotInventRouteSamples(t *testing.T) {
+	output := RenderDashboard([]probe.Target{probe.NewTarget("test", "http://localhost", "localhost")}, probe.NewStateManager(), 0, &probe.EnvironmentInfo{}, true)
+	if strings.Contains(output, "10.x.x.x") || strings.Contains(output, "0.8ms") || strings.Contains(output, "3.2ms") {
+		t.Fatal("dashboard displayed unmeasured route samples")
+	}
+	if !strings.Contains(output, "暂无逐跳探测数据") {
+		t.Fatal("missing honest route placeholder")
+	}
+}
+
 func TestRenderTableFormat(t *testing.T) {
 	snap := &probe.ProbeSnapshot{
 		Target:     probe.NewTarget("Claude", "https://api.anthropic.com", "api.anthropic.com:443"),

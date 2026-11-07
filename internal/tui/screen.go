@@ -3,12 +3,29 @@ package tui
 
 import (
 	"fmt"
-	"os/exec"
-	"runtime"
+	"sync"
 )
+
+var terminalMu sync.Mutex
+var restoreModes func()
+var alternateScreen bool
+
+func InitTerminal() error {
+	terminalMu.Lock()
+	defer terminalMu.Unlock()
+	if restoreModes != nil {
+		return nil
+	}
+	var err error
+	restoreModes, err = initPlatformTerminal()
+	return err
+}
 
 // EnterAltScreen switches to the alternate screen buffer, clears it, and hides the cursor.
 func EnterAltScreen() {
+	terminalMu.Lock()
+	alternateScreen = true
+	terminalMu.Unlock()
 	fmt.Print("\033[?1049h\033[H\033[?25l")
 }
 
@@ -25,10 +42,14 @@ func ClearScreen() {
 // RestoreTerminal restores terminal echo, canonical mode, cursor visibility,
 // and exits the alternate screen buffer safely across platforms.
 func RestoreTerminal() {
-	sttyFlag := "-f"
-	if runtime.GOOS == "linux" {
-		sttyFlag = "-F"
+	terminalMu.Lock()
+	defer terminalMu.Unlock()
+	if alternateScreen {
+		ExitAltScreen()
+		alternateScreen = false
 	}
-	exec.Command("stty", sttyFlag, "/dev/tty", "echo", "icanon").Run()
-	ExitAltScreen()
+	if restoreModes != nil {
+		restoreModes()
+		restoreModes = nil
+	}
 }

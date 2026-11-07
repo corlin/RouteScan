@@ -1,6 +1,8 @@
 package probe
 
 import (
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +100,9 @@ func TestEstimateHopsFromTTL(t *testing.T) {
 
 func TestTraceHopsLocalhost(t *testing.T) {
 	hops, count, err := TraceHops("127.0.0.1", 2)
+	if errors.Is(err, exec.ErrNotFound) {
+		t.Skip("system traceroute command is not installed")
+	}
 	if err != nil {
 		t.Fatalf("TraceHops failed: %v", err)
 	}
@@ -106,6 +111,14 @@ func TestTraceHopsLocalhost(t *testing.T) {
 	}
 	if len(hops) == 0 {
 		t.Logf("no hops parsed (traceroute might be restricted or formatted differently)")
+	}
+}
+
+func TestTraceHopsMissingCommandDoesNotInventHops(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	hops, count, err := TraceHops("127.0.0.1", 2)
+	if err == nil || len(hops) != 0 || count != 0 {
+		t.Fatalf("missing command must report no measured hops: %v, %d, %v", hops, count, err)
 	}
 }
 

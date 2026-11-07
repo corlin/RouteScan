@@ -47,6 +47,26 @@ func TestStateManager(t *testing.T) {
 	}
 }
 
+func TestStateManagerPublishedSnapshotsRemainUnchanged(t *testing.T) {
+	sm := NewStateManager()
+	sm.Update("test", &ProbeSnapshot{Target: NewTarget("test", "http://localhost", "localhost")})
+	before := sm.Get("test")
+	sm.UpdateHops("test", []HopInfo{{HopNum: 1, IP: "127.0.0.1"}}, 1)
+	if before.Hops != 0 || len(before.HopsList) != 0 {
+		t.Fatal("background trace mutated a snapshot already being rendered")
+	}
+}
+
+func TestStateManagerPreservesPartialTraceError(t *testing.T) {
+	sm := NewStateManager()
+	sm.Update("test", &ProbeSnapshot{Target: NewTarget("test", "http://localhost", "localhost")})
+	sm.UpdateHops("test", []HopInfo{{HopNum: 1, IP: "127.0.0.1"}}, 1, os.ErrDeadlineExceeded)
+	sm.Update("test", &ProbeSnapshot{Target: NewTarget("test", "http://localhost", "localhost"), TCP: time.Millisecond})
+	if sm.Get("test").TraceErr != os.ErrDeadlineExceeded {
+		t.Fatal("regular HTTP refresh hid the incomplete route warning")
+	}
+}
+
 func TestStateManagerPacketLossAndJitter(t *testing.T) {
 	sm := NewStateManager()
 	tgt := NewTarget("OpenAI", "https://api.openai.com", "api.openai.com:443")

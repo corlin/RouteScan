@@ -5,8 +5,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
+	"net"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +48,9 @@ func parseTracerouteLine(line string) (HopInfo, bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return HopInfo{}, false
+	}
+	if hop, ok := parseWindowsTracertLine(line); ok {
+		return hop, true
 	}
 
 	if match := reHop.FindStringSubmatch(line); len(match) > 4 && match[4] != "" {
@@ -106,6 +112,64 @@ func parseTracerouteLine(line string) (HopInfo, bool) {
 	return HopInfo{}, false
 }
 
+// Parse numeric sample columns rather than localized headings or time units.
+func parseWindowsTracertLine(line string) (HopInfo, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 4 {
+		return HopInfo{}, false
+	}
+	number, err := strconv.Atoi(fields[0])
+	if err != nil || number < 1 {
+		return HopInfo{}, false
+	}
+	hop := HopInfo{HopNum: number}
+	samples := []*time.Duration{&hop.RTT1, &hop.RTT2, &hop.RTT3}
+	index, lost := 1, 0
+	for _, sample := range samples {
+		if index >= len(fields) {
+			return HopInfo{}, false
+		}
+		if fields[index] == "*" {
+			lost++
+			index++
+			continue
+		}
+		value := fields[index]
+		less := strings.HasPrefix(value, "<")
+		value = strings.TrimPrefix(value, "<")
+		if value == "" {
+			index++
+			if index >= len(fields) {
+				return HopInfo{}, false
+			}
+			value = fields[index]
+		}
+		ms, err := strconv.ParseFloat(strings.ReplaceAll(value, ",", "."), 64)
+		if err != nil || ms < 0 || index+1 >= len(fields) {
+			return HopInfo{}, false
+		}
+		if less {
+			ms /= 2
+		}
+		*sample = time.Duration(ms * float64(time.Millisecond))
+		index += 2 // sample followed by localized time unit
+	}
+	if lost == 3 {
+		hop.IP, hop.Host, hop.Loss = "*", "Request timed out", 100
+		return hop, true
+	}
+	if index >= len(fields) {
+		return HopInfo{}, false
+	}
+	ip := net.ParseIP(strings.Trim(fields[len(fields)-1], "[]"))
+	if ip == nil {
+		return HopInfo{}, false
+	}
+	hop.IP, hop.Host = ip.String(), ip.String()
+	hop.Loss = float64(lost) * 100 / 3
+	return hop, true
+}
+
 func annotateHopWithGeo(hop *HopInfo, geoMgr *geoip.Manager) {
 	if geoMgr == nil || hop == nil || hop.IP == "*" || hop.IP == "" {
 		return
@@ -125,7 +189,13 @@ func TraceHopsWithGeo(host string, maxHops int, geoMgr *geoip.Manager) ([]HopInf
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "traceroute", "-q", "1", "-w", "1", "-m", strconv.Itoa(maxHops), host)
+	command := "traceroute"
+	args := []string{"-q", "1", "-w", "1", "-m", strconv.Itoa(maxHops), host}
+	if runtime.GOOS == "windows" {
+		command = "tracert.exe"
+		args = []string{"-d", "-w", "1000", "-h", strconv.Itoa(maxHops), host}
+	}
+	cmd := exec.CommandContext(ctx, command, args...)
 	out, err := cmd.Output()
 
 	var hops []HopInfo
@@ -140,9 +210,17 @@ func TraceHopsWithGeo(host string, maxHops int, geoMgr *geoip.Manager) ([]HopInf
 		}
 	}
 
-	totalHops := len(hops)
-	if totalHops == 0 {
-		totalHops = 12
+	totalHops := 0
+	for _, hop := range hops {
+		if hop.HopNum > totalHops {
+			totalHops = hop.HopNum
+		}
+	}
+	if err != nil {
+		return hops, totalHops, fmt.Errorf("%s: %w", command, err)
+	}
+	if len(hops) == 0 {
+		return nil, 0, fmt.Errorf("%s: no route samples returned", command)
 	}
 	return hops, totalHops, nil
 }

@@ -2,9 +2,9 @@
 package tui
 
 import (
+	"bufio"
 	"os"
-	"os/exec"
-	"runtime"
+	"strings"
 )
 
 type KeyType int
@@ -21,6 +21,8 @@ const (
 
 // parseKey translates raw byte sequences into KeyType values.
 func parseKey(buf []byte, n int) KeyType {
+	buf = []byte(strings.TrimRight(string(buf[:n]), "\r\n"))
+	n = len(buf)
 	if n == 1 {
 		switch buf[0] {
 		case 'q', 'Q', 3: // 'q' or Ctrl+C
@@ -50,31 +52,34 @@ func parseKey(buf []byte, n int) KeyType {
 // ListenKeys configures terminal raw mode and listens for user key presses,
 // dispatching KeyType events over keyChan until stopChan is signaled or terminal exits.
 func ListenKeys(keyChan chan<- KeyType, stopChan <-chan struct{}) {
-	// macOS uses -f /dev/tty, Linux uses -F /dev/tty
-	sttyFlag := "-f"
-	if runtime.GOOS == "linux" {
-		sttyFlag = "-F"
-	}
-
-	exec.Command("stty", sttyFlag, "/dev/tty", "cbreak", "min", "1").Run()
-	exec.Command("stty", sttyFlag, "/dev/tty", "-echo").Run()
-	defer exec.Command("stty", sttyFlag, "/dev/tty", "echo", "icanon").Run()
-
-	buf := make([]byte, 3)
+	reader := bufio.NewReader(os.Stdin)
+	escapeState := 0
 	for {
 		select {
 		case <-stopChan:
 			return
 		default:
-			n, err := os.Stdin.Read(buf)
+			b, err := reader.ReadByte()
 			if err != nil {
 				return
 			}
-			if n == 0 {
+			// Decode incrementally so split arrow sequences work, while a lone
+			// Escape never consumes the next ordinary command (especially q).
+			if b == 27 {
+				escapeState = 1
 				continue
 			}
-
-			key := parseKey(buf, n)
+			if escapeState == 1 && (b == '[' || b == 'O') {
+				escapeState = 2
+				continue
+			}
+			key := KeyNone
+			if escapeState == 2 && (b == 'A' || b == 'B') {
+				key = parseKey([]byte{27, '[', b}, 3)
+			} else {
+				key = parseKey([]byte{b}, 1)
+			}
+			escapeState = 0
 			if key != KeyNone {
 				select {
 				case keyChan <- key:
